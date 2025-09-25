@@ -5,9 +5,13 @@ customElements.define('washing-weather-card', class extends HTMLElement {
   DRY_LOW_WIND_SPEED_THRESHOLD = 0; // km/h
   DRY_HIGH_WIND_SPEED_THRESHOLD = 40; //km/h
 
+  // Bedsheet configuration
+  BEDSHEET_CHANGE_INTERVAL = 14; // days
+
   constructor() {
     super();
     this._hass = null;
+    this.bedsheetData = null;
   }
 
   setConfig(config) {
@@ -136,19 +140,293 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     // Calculate dry/rain windows
     const rainWindows = this.calculateRainWindows(weatherData);
     
+    // Get bedsheet status
+    const bedsheetStatus = this.getBedsheetStatus();
+    
     // Log weather data
     console.log('=== FINAL WEATHER DATA ===');
     console.log(JSON.stringify(weatherData, null, 2));
     
     // Update display with enhanced UI
     if (contentDiv) {
-      contentDiv.innerHTML = this.renderWeatherContent(weatherData, washingAdvice, rainWindows);
+      contentDiv.innerHTML = this.renderWeatherContent(weatherData, washingAdvice, rainWindows, bedsheetStatus);
+      
+      // Add event listeners after rendering content
+      this.attachBedsheetEventListeners();
+    }
+  }
+
+  // Add this new method to handle event listeners
+  attachBedsheetEventListeners() {
+    // Set Date button
+    const setButton = this.querySelector('.bedsheet-button.set-button');
+    if (setButton) {
+      setButton.removeEventListener('click', this.handleSetButtonClick); // Remove old listener
+      setButton.addEventListener('click', this.handleSetButtonClick.bind(this));
+    }
+
+    // Changed button
+    const changedButton = this.querySelector('.bedsheet-button:not(.set-button)');
+    if (changedButton) {
+      changedButton.removeEventListener('click', this.handleChangedButtonClick); // Remove old listener
+      changedButton.addEventListener('click', this.handleChangedButtonClick.bind(this));
+    }
+
+    // Calendar input
+    const calendarInput = this.querySelector('#date');
+    if (calendarInput) {
+      calendarInput.removeEventListener('change', this.handleCalendarChange); // Remove old listener
+      calendarInput.addEventListener('change', this.handleCalendarChange.bind(this));
+    }
+
+    // Quick date buttons
+    const todayButton = this.querySelector('.calendar-buttons button:nth-child(1)');
+    const weekButton = this.querySelector('.calendar-buttons button:nth-child(2)');
+    const twoWeekButton = this.querySelector('.calendar-buttons button:nth-child(3)');
+
+    if (todayButton) {
+      todayButton.removeEventListener('click', this.handleTodayClick);
+      todayButton.addEventListener('click', this.handleTodayClick.bind(this));
+    }
+    if (weekButton) {
+      weekButton.removeEventListener('click', this.handleWeekClick);
+      weekButton.addEventListener('click', this.handleWeekClick.bind(this));
+    }
+    if (twoWeekButton) {
+      twoWeekButton.removeEventListener('click', this.handleTwoWeekClick);
+      twoWeekButton.addEventListener('click', this.handleTwoWeekClick.bind(this));
+    }
+  }
+
+  // Event handler methods
+  handleSetButtonClick(event) {
+    event.preventDefault();
+    this.showBedsheetOptions();
+  }
+
+  async handleChangedButtonClick(event) {
+    event.preventDefault();
+    await this.markBedsheetsChanged();
+  }
+
+  async handleCalendarChange(event) {
+    await this.setBedsheetDateFromCalendar(event.target.value);
+  }
+
+  async handleTodayClick(event) {
+    event.preventDefault();
+    await this.setBedsheetDate(0);
+  }
+
+  async handleWeekClick(event) {
+    event.preventDefault();
+    await this.setBedsheetDate(7);
+  }
+
+  async handleTwoWeekClick(event) {
+    event.preventDefault();
+    await this.setBedsheetDate(14);
+  }
+
+  // Get bedsheet data from memory
+  getBedsheetData() {
+    // Store in a global variable attached to the card element
+    if (!this.bedsheetData) {
+      // Initialize with default data
+      this.bedsheetData = {
+        lastChanged: null, // Date string
+        interval: this.BEDSHEET_CHANGE_INTERVAL
+      };
+    }
+    return this.bedsheetData;
+  }
+
+  // Save bedsheet data
+  setBedsheetData(data) {
+    this.bedsheetData = { ...data };
+  }
+
+  // Calculate bedsheet status
+  getBedsheetStatus() {
+    const data = this.getBedsheetData();
+
+    //  Extract the bedsheet entity from configuration.yaml
+    const entity = this._hass?.states['input_datetime.bedsheet_last_changed'];
+    const lastChanged = entity?.state;
+    
+    console.log('Bedsheet entity state:', lastChanged);
+    
+    if (!lastChanged || lastChanged === 'unknown' || !this._hass) {
+      return {
+        status: 'unknown',
+        daysSince: 0,
+        interval: data.interval,
+        icon: 'mdi:bed-outline',
+        text: 'Set when you last changed bedsheets',
+        color: '#FFC107',
+        showSetButton: true
+      };
+    }
+    
+    const lastChangedDate = new Date(lastChanged);
+    const now = new Date();
+    const daysSince = Math.floor((now - lastChangedDate) / (1000 * 60 * 60 * 24));
+    
+    let status, icon, text, color;
+    
+    if (daysSince >= data.interval) {
+      status = 'overdue';
+      icon = 'mdi:bed-empty';
+      text = `Bedsheets overdue! ${daysSince}/${data.interval} days`;
+      color = '#F44336';
+    } else if (daysSince >= data.interval * 0.8) {
+      status = 'due_soon';
+      icon = 'mdi:bed';
+      text = `Change bedsheets soon (${daysSince}/${data.interval} days)`;
+      color = '#FFC107';
+    } else {
+      status = 'clean';
+      icon = 'mdi:bed-outline';
+      text = `Bedsheets clean (${daysSince}/${data.interval} days)`;
+      color = '#4CAF50';
+    }
+    
+    const nextChange = new Date(lastChangedDate.getTime() + (data.interval * 24 * 60 * 60 * 1000));
+    
+    return {
+      status,
+      daysSince,
+      interval: data.interval,
+      nextChange: nextChange.toLocaleDateString(),
+      icon,
+      text,
+      color,
+      showSetButton: false
+    };
+  }
+
+  // Mark bedsheets as changed today
+  async markBedsheetsChanged() {
+    if (!this._hass) {
+      console.warn('No Home Assistant instance available');
+      return;
+    }
+    
+    try {
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+      console.log('Setting bedsheet date to today:', today);
+      
+      // Call Home Assistant service to set the input_datetime
+      // For input_datetime with has_time: false, we use the date parameter
+      await this._hass.callService('input_datetime', 'set_datetime', {
+        entity_id: 'input_datetime.bedsheet_last_changed',
+        date: today
+      });
+      
+      console.log('Bedsheet date set successfully');
+      
+      // Re-render the card
+      this.updateWeatherData();
+    } catch (error) {
+      console.error('Error setting bedsheet date:', error);
+    }
+  }
+
+  // Set initial bedsheet change date
+  async setBedsheetDate(daysAgo = 0) {
+    if (!this._hass) {
+      console.warn('No Home Assistant instance available');
+      return;
+    }
+    
+    try {
+      const date = new Date();
+      date.setDate(date.getDate() - daysAgo);
+      const dateString = date.toISOString().split('T')[0];
+      console.log('Setting bedsheet date to:', dateString, '(', daysAgo, 'days ago)');
+      
+      // Call Home Assistant service to set the input_datetime
+      // For input_datetime with has_time: false, we use the date parameter
+      await this._hass.callService('input_datetime', 'set_datetime', {
+        entity_id: 'input_datetime.bedsheet_last_changed',
+        date: dateString
+      });
+      
+      console.log('Bedsheet date set successfully');
+      
+      // Re-render the card
+      this.updateWeatherData();
+    } catch (error) {
+      console.error('Error setting bedsheet date:', error);
+    }
+  }
+
+  // Show bedsheet date options
+  showBedsheetOptions() {
+    console.log('showBedsheetOptions called');
+    const options = this.querySelector('#bedsheet-options');
+    console.log('bedsheet-options element found:', !!options);
+    
+    if (options) {
+      const isVisible = options.style.display === 'none';
+      console.log('Current visibility:', options.style.display, 'Will show:', isVisible);
+      options.style.display = isVisible ? 'block' : 'none';
+      
+      // Set calendar value when opening
+      if (isVisible) {
+        const calendar = this.querySelector('#date');
+        console.log('Calendar element found:', !!calendar);
+        
+        if (calendar) {
+          const entity = this._hass?.states['input_datetime.bedsheet_last_changed'];
+          const lastChanged = entity?.state;
+          console.log('Current bedsheet entity state:', lastChanged);
+          
+          if (lastChanged && lastChanged !== 'unknown') {
+            calendar.value = lastChanged;
+            console.log('Set calendar to entity value:', lastChanged);
+          } else {
+            const today = new Date().toISOString().split('T')[0];
+            calendar.value = today;
+            console.log('Set calendar to today:', today);
+          }
+        }
+      }
+    }
+  }
+
+  // Set bedsheet date from calendar input
+  async setBedsheetDateFromCalendar(dateString) {
+    console.log('setBedsheetDateFromCalendar called with:', dateString);
+    if (!dateString || !this._hass) {
+      console.warn('No date string or Home Assistant instance available');
+      return;
+    }
+    
+    try {
+      console.log('Setting bedsheet date from calendar:', dateString);
+      
+      // Call Home Assistant service to set the input_datetime
+      // For input_datetime with has_time: false, we use the date parameter
+      await this._hass.callService('input_datetime', 'set_datetime', {
+        entity_id: 'input_datetime.bedsheet_last_changed',
+        date: dateString
+      });
+      
+      console.log('Bedsheet date set successfully from calendar');
+      
+      // Re-render the card
+      this.updateWeatherData();
+    } catch (error) {
+      console.error('Error setting bedsheet date from calendar:', error);
     }
   }
 
   /**
    * Get weather forecast data from Home Assistant
    * Uses the weather.get_forecasts service
+   * 
+   * @note filters dry/wet windows from now and onwards of today (as previous hours are useless information)
    * https://www.home-assistant.io/docs/scripts/#call-a-service @ callService
    * https://www.home-assistant.io/integrations/weather/
    * @param forecastType - either 'daily', 'hourly', or 'twice_daily'
@@ -237,82 +515,156 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     }
   }
 
-  /// todo we arent getting horly or weekly forecast. getService not serving it either?
   calculateRainWindows(weatherData) {
-    console.log('=== CALCULATING RAIN WINDOWS ===');
-    
-    // Try to get hourly forecast first, fallback to daily if not available
+    console.log('=== CALCULATING DRYING WINDOWS ===');
+   
     let hourlyData = weatherData.hourly_forecast || [];
-    
-    console.log('Hourly forecast data available:', hourlyData.length > 0 ? `${hourlyData.length} hours` : 'none');  
-    console.log('Hourly data for rain calculation:', hourlyData);
-    
-    // error check (no array returned)
+   
     if (hourlyData.length === 0) {
-      console.log('No hourly or daily data available for rain windows');
       return {
         dryWindows: [],
         rainWindows: [],
         message: 'Hourly forecast not available'
       };
     }
+   
+    // get current time so we can only return future hours
+    const now = new Date();
     
-    const dryWindows = [];
-    const rainWindows = [];
-    let currentDryStart = null;
-    let currentRainStart = null;
-    
-    hourlyData.forEach((hour, index) => {
+    // Filter for future daytime hours only (7am - 7pm)
+    const futureDaytimeHours = hourlyData.filter(hour => {
       const date = new Date(hour.datetime);
-      const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      const hour24 = date.getHours();
+      const isDaytime = hour24 >= 7 && hour24 < 19;
+      const isFuture = date > now;
+      return isDaytime && isFuture;
+    });
+   
+    if (futureDaytimeHours.length === 0) {
+      return {
+        dryWindows: [],
+        rainWindows: [],
+        message: 'No future daytime hours available'
+      };
+    }
+   
+    // Check for rain during future daytime hours
+    const rainyHours = [];
+    const dryHours = [];
+    
+    futureDaytimeHours.forEach(hour => {
+      const date = new Date(hour.datetime);
+      const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
       const precipProbability = hour.precipitation_probability || 0;
       const precipitation = hour.precipitation || 0;
       const condition = (hour.condition || '').toLowerCase();
-      
-      // Consider it "rainy" if precipitation probability > 30% OR actual precipitation > 0 OR rainy condition
-      const isRainy = precipProbability > 30 || precipitation > 0 || 
+     
+      const isRainy = precipProbability > 30 || precipitation > 0 ||
                      condition.includes('rain') || condition.includes('storm') || condition.includes('drizzle');
-      
-      console.log(`Hour ${index}: ${time}, Precip: ${precipitation}mm, Prob: ${precipProbability}%, Rainy: ${isRainy}`);
-      
+     
       if (isRainy) {
-        // Starting a rain period
-        if (currentDryStart !== null) {
-          // End the current dry window
-          dryWindows.push(`${currentDryStart} - ${time}`);
-          currentDryStart = null;
-        }
-        // Start rain window if not already started
-        if (currentRainStart === null) {
-          currentRainStart = time;
-        }
+        rainyHours.push({ time, hour, precipitation, precipProbability });
       } else {
-        // Dry period
-        if (currentRainStart !== null) {
-          // End the current rain window
-          rainWindows.push(`${currentRainStart} - ${time}`);
-          currentRainStart = null;
-        }
-        // Start dry window if not already started
-        if (currentDryStart === null) {
-          currentDryStart = time;
-        }
-      }
-      
-      // Handle last hour
-      if (index === hourlyData.length - 1) {
-        if (currentDryStart !== null) {
-          dryWindows.push(`${currentDryStart} - End of day`);
-        }
-        if (currentRainStart !== null) {
-          rainWindows.push(`${currentRainStart} - End of day`);
-        }
+        dryHours.push({ time, hour });
       }
     });
+   
+    // Smart summary logic
+    const totalFutureHours = futureDaytimeHours.length;
+    const rainyHoursCount = rainyHours.length;
+    const dryHoursCount = dryHours.length;
     
-    console.log('Calculated dry windows:', dryWindows);
-    console.log('Calculated rain windows:', rainWindows);
-    
+    console.log(`Future daytime analysis: ${totalFutureHours} total hours, ${rainyHoursCount} rainy, ${dryHoursCount} dry`);
+   
+    // Generate human-friendly messages for future hours only
+    const dryWindows = [];
+    const rainWindows = [];
+   
+    if (rainyHoursCount === 0) {
+      // Perfect remaining day - no rain during future daytime hours
+      if (totalFutureHours > 6) {
+        dryWindows.push("Rest of the day");
+      } else {
+        const firstHour = futureDaytimeHours[0];
+        const lastHour = futureDaytimeHours[futureDaytimeHours.length - 1];
+        const startTime = new Date(firstHour.datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+        const endTime = new Date(lastHour.datetime).getHours() === 18 ? "7:00 PM" : 
+          new Date(new Date(lastHour.datetime).getTime() + 60*60*1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+        dryWindows.push(`${startTime} - ${endTime}`);
+      }
+    } else if (rainyHoursCount <= 2) {
+      // Mostly good with brief rain
+      if (rainyHours.length === 1) {
+        const rainTime = rainyHours[0].time;
+        rainWindows.push(`Brief shower around ${rainTime}`);
+      } else {
+        // Find rain period
+        const firstRain = rainyHours[0].time;
+        const lastRain = rainyHours[rainyHours.length - 1].time;
+        rainWindows.push(`${firstRain} - ${lastRain}`);
+      }
+      dryWindows.push("Most remaining daylight hours");
+    } else if (rainyHoursCount >= totalFutureHours * 0.7) {
+      // Mostly rainy remaining day
+      rainWindows.push("Most remaining daylight hours");
+      if (dryHoursCount > 0) {
+        dryWindows.push("Brief dry periods");
+      }
+    } else {
+      // Mixed remaining day - build actual future windows
+      let currentDryStart = null;
+      let currentRainStart = null;
+      
+      futureDaytimeHours.forEach((hour, index) => {
+        const date = new Date(hour.datetime);
+        const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+        const precipProbability = hour.precipitation_probability || 0;
+        const precipitation = hour.precipitation || 0;
+        const condition = (hour.condition || '').toLowerCase();
+       
+        const isRainy = precipProbability > 30 || precipitation > 0 ||
+                       condition.includes('rain') || condition.includes('storm') || condition.includes('drizzle');
+       
+        if (isRainy) {
+          if (currentDryStart !== null) {
+            const endTime = index > 0 ? time : time;
+            dryWindows.push(`${currentDryStart} - ${endTime}`);
+            currentDryStart = null;
+          }
+          if (currentRainStart === null) {
+            currentRainStart = time;
+          }
+        } else {
+          if (currentRainStart !== null) {
+            const endTime = index > 0 ? time : time;
+            rainWindows.push(`${currentRainStart} - ${endTime}`);
+            currentRainStart = null;
+          }
+          if (currentDryStart === null) {
+            currentDryStart = time;
+          }
+        }
+       
+        // Handle last future hour
+        if (index === futureDaytimeHours.length - 1) {
+          const lastHourTime = new Date(hour.datetime);
+          const isLastHourAt6PM = lastHourTime.getHours() === 18;
+          const endTimeStr = isLastHourAt6PM ? "7:00 PM" : 
+            new Date(lastHourTime.getTime() + 60*60*1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+            
+          if (currentDryStart !== null) {
+            dryWindows.push(`${currentDryStart} - ${endTimeStr}`);
+          }
+          if (currentRainStart !== null) {
+            rainWindows.push(`${currentRainStart} - ${endTimeStr}`);
+          }
+        }
+      });
+    }
+   
+    console.log('Future drying windows:', dryWindows);
+    console.log('Future rain periods to avoid:', rainWindows);
+   
     return {
       dryWindows,
       rainWindows,
@@ -345,7 +697,6 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         color: '#4CAF50'
       };
     }
-
 
     // didnt pass dryDay, check more.. to see what kind of weather we have today
     
@@ -405,7 +756,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     return 'mdi:weather-sunny';
   }
 
-  renderWeatherContent(weatherData, washingAdvice, rainWindows) {
+  renderWeatherContent(weatherData, washingAdvice, rainWindows, bedsheetStatus) {
     const temp = Math.round(weatherData.temperature || 0);
     const condition = weatherData.condition || 'N/A';
     
@@ -463,6 +814,8 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         </div>
       </div>
       
+      ${this.renderBedsheetTracker(bedsheetStatus)}
+      
       ${this.renderRainWindows(rainWindows)}
       
       ${weatherData.forecast && weatherData.forecast.length > 0 ? this.renderForecast(weatherData.forecast) : ''}
@@ -470,7 +823,12 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       <p style="margin-top: 15px; font-size: 0.8em; color: var(--secondary-text-color);"><em>Check console for full JSON data</em></p>
     `;
   }
-
+  
+  /**
+   * Renders the rain windows
+   * @param {*} rainWindows Array of forecast objects in beautiful colourful format, depending on its dry or wet time windows
+   * @returns HTML string representing the rain windows
+   */
   renderRainWindows(rainWindows) {
     if (!rainWindows || rainWindows.message) {
       return `
@@ -483,28 +841,84 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         </div>
       `;
     }
-
-    const hasDryWindows = rainWindows.dryWindows && rainWindows.dryWindows.length > 0;
-    const hasRainWindows = rainWindows.rainWindows && rainWindows.rainWindows.length > 0;
-
+  
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinutes = now.getMinutes();
+  
+    // Helper function to check if a time window is in the future
+    const isWindowInFuture = (windowStr) => {
+      if (!windowStr || typeof windowStr !== 'string') return false;
+      
+      // Handle descriptive windows (these are already filtered in calculateRainWindows)
+      if (windowStr.includes('Rest of') || windowStr.includes('Most remaining') || 
+          windowStr.includes('Brief shower around') || windowStr.includes('All day')) {
+        return true;
+      }
+  
+      // Parse time ranges like "07:00 am - 10:00 am" or "11:00 am - 04:00 pm"
+      const timeRangeMatch = windowStr.match(/(\d{1,2}:\d{2}\s*[ap]m)\s*-\s*(\d{1,2}:\d{2}\s*[ap]m)/i);
+      if (!timeRangeMatch) return true; // If we can't parse it, show it to be safe
+  
+      const [, startTimeStr, endTimeStr] = timeRangeMatch;
+      
+      // Convert time strings to 24-hour format for comparison
+      const parseTime = (timeStr) => {
+        const cleanTime = timeStr.trim().toLowerCase();
+        const [time, period] = cleanTime.split(/\s*([ap]m)/);
+        const [hours, minutes] = time.split(':').map(Number);
+        
+        let hour24 = hours;
+        if (period === 'pm' && hours !== 12) hour24 += 12;
+        if (period === 'am' && hours === 12) hour24 = 0;
+        
+        return { hour: hour24, minute: minutes };
+      };
+  
+      try {
+        const startTime = parseTime(startTimeStr);
+        const endTime = parseTime(endTimeStr);
+        
+        // Check if the entire window is in the past
+        const currentTimeMinutes = currentHour * 60 + currentMinutes;
+        const endTimeMinutes = endTime.hour * 60 + endTime.minute;
+        
+        // If end time is past current time, the window is still relevant
+        return endTimeMinutes > currentTimeMinutes;
+        
+      } catch (error) {
+        console.warn('Error parsing time window:', windowStr, error);
+        return true; // Show it if we can't parse it
+      }
+    };
+  
+    // Filter windows to only show future ones
+    const futureRainWindows = rainWindows.rainWindows ? 
+      rainWindows.rainWindows.filter(isWindowInFuture) : [];
+    const futureDryWindows = rainWindows.dryWindows ? 
+      rainWindows.dryWindows.filter(isWindowInFuture) : [];
+  
+    const hasDryWindows = futureDryWindows.length > 0;
+    const hasRainWindows = futureRainWindows.length > 0;
+  
     if (!hasDryWindows && !hasRainWindows) {
       return `
         <div class="rain-forecast">
           <div class="forecast-header">Today's Drying Windows</div>
           <div class="no-rain">
             <ha-icon icon="mdi:weather-sunny"></ha-icon>
-            <span>Stable weather conditions expected</span>
+            <span>No more drying opportunities today</span>
           </div>
         </div>
       `;
     }
-
+  
     let content = `<div class="rain-forecast"><div class="forecast-header">Today's Drying Windows</div>`;
-
+  
     // Show dry windows (good for drying)
     if (hasDryWindows) {
       content += `<div class="dry-windows">`;
-      rainWindows.dryWindows.forEach(window => {
+      futureDryWindows.forEach(window => {
         content += `
           <div class="dry-window">
             <ha-icon icon="mdi:tshirt-crew"></ha-icon>
@@ -514,44 +928,139 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       });
       content += `</div>`;
     }
-
-    // Show rain windows (avoid drying)
+  
+    // Show rain windows (only future specific times, not "most of day")
     if (hasRainWindows) {
-      content += `<div class="rain-windows">`;
-      rainWindows.rainWindows.forEach(window => {
-        content += `
-          <div class="rain-window">
-            <ha-icon icon="mdi:weather-rainy"></ha-icon>
-            <span><strong>Avoid drying:</strong> ${window}</span>
-          </div>
-        `;
-      });
-      content += `</div>`;
+      const specificRainWindows = futureRainWindows.filter(window => 
+        !window.includes('Most of') && !window.includes('Brief shower')
+      );
+      
+      if (specificRainWindows.length > 0) {
+        content += `<div class="rain-windows">`;
+        // loop through each future rainwindow, append each window to ui
+        specificRainWindows.forEach(window => {
+          content += `
+            <div class="rain-window">
+              <ha-icon icon="mdi:weather-rainy"></ha-icon>
+              <span><strong>Avoid drying:</strong> ${window}</span>
+            </div>
+          `;
+        });
+        content += `</div>`;
+      }
     }
-
-    // Summary message
-    if (hasDryWindows) {
+  
+    // Smart summary message (using filtered windows)
+    const allDayDrying = futureDryWindows.some(w => w.includes('All day'));
+    const mostlyDry = futureDryWindows.some(w => w.includes('Most of') || w.includes('Rest of'));
+    const mostlyRainy = futureRainWindows.some(w => w.includes('Most of'));
+    const briefShower = futureRainWindows.some(w => w.includes('Brief shower'));
+  
+    if (allDayDrying) {
+      content += `
+        <div class="window-summary excellent">
+          <ha-icon icon="mdi:weather-sunny"></ha-icon>
+          <span>Perfect day for outdoor drying!</span>
+        </div>
+      `;
+    } else if (mostlyDry || briefShower) {
       content += `
         <div class="window-summary good">
-          <ha-icon icon="mdi:weather-sunny"></ha-icon>
+          <ha-icon icon="mdi:weather-partly-cloudy"></ha-icon>
           <span>Great day for outdoor drying!</span>
         </div>
       `;
-    } else if (hasRainWindows) {
+    } else if (mostlyRainy) {
       content += `
         <div class="window-summary poor">
           <ha-icon icon="mdi:weather-rainy"></ha-icon>
           <span>Consider indoor drying today</span>
         </div>
       `;
+    } else if (hasDryWindows || hasRainWindows) {
+      content += `
+        <div class="window-summary mixed">
+          <ha-icon icon="mdi:weather-partly-rainy"></ha-icon>
+          <span>Mixed conditions - time your drying</span>
+        </div>
+      `;
     }
-
+  
     content += `</div>`;
     return content;
   }
 
+  // Render bedsheet tracker
+  renderBedsheetTracker(bedsheetStatus) {
+    if (!bedsheetStatus) return '';
+    
+    return `
+      <div class="bedsheet-tracker" style="--bedsheet-color: ${bedsheetStatus.color}">
+        <div class="bedsheet-header">
+          <div class="bedsheet-info">
+            <ha-icon icon="${bedsheetStatus.icon}"></ha-icon>
+            <span>${bedsheetStatus.text}</span>
+          </div>
+          <div class="bedsheet-buttons">
+            <button class="bedsheet-button set-button">
+              <ha-icon icon="mdi:calendar-plus"></ha-icon>
+              Set Date
+            </button>
+            ${!bedsheetStatus.showSetButton ? `
+              <button class="bedsheet-button">
+                <ha-icon icon="mdi:check"></ha-icon>
+                Changed
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        
+        ${!bedsheetStatus.showSetButton && bedsheetStatus.nextChange ? `
+          <div class="bedsheet-next">
+            <ha-icon icon="mdi:calendar"></ha-icon>
+            <span>Next change due: ${bedsheetStatus.nextChange}</span>
+          </div>
+        ` : ''}
+        
+        ${!bedsheetStatus.showSetButton ? `
+          <div class="bedsheet-progress">
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${Math.min(100, (bedsheetStatus.daysSince / bedsheetStatus.interval) * 100)}%"></div>
+            </div>
+            <div class="progress-text">${bedsheetStatus.daysSince} / ${bedsheetStatus.interval} days</div>
+          </div>
+        ` : ''}
+        
+        <div class="bedsheet-options" id="bedsheet-options" style="display: none;">
+          <div class="calendar-container">
+            <label for="date">Select last changed date:</label>
+            <input
+              type="date"
+              id="date"
+              name="date"
+              value="${bedsheetStatus.lastChanged ? new Date(bedsheetStatus.lastChanged).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]}"
+              class="bedsheet-date-input block bg-background w-full pl-4 pr-10 py-2.5 border border-border rounded-lg text-content-primary placeholder:text-content-white/50 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent cursor-pointer"
+              style="-webkit-appearance: none; min-height: 44px; font-size: 16px; padding-right: 2.5rem; position: relative; z-index: 1;"
+              required
+            />
+            <div class="calendar-buttons">
+              <button>Today</button>
+              <button>1 week ago</button>
+              <button>2 weeks ago</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Renders a 5-day forecast 
+   * @param {*} forecast Array of forecast objects 
+   * @returns HTML string representing the forecast
+   */
   renderForecast(forecast) {
-    const forecastDays = forecast.slice(0, 5).map((day, index) => {
+    const forecastDays = forecast.slice(0, 5).map((day) => {
       const date = new Date(day.datetime);
       const dayName = date.toLocaleDateString(undefined, { weekday: 'short' });
       const temp = Math.round(day.temperature || 0);
@@ -651,6 +1160,21 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         color: var(--secondary-text-color);
         transition: transform 0.3s ease-in-out;
         cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.05);
+      }
+
+      .refresh-button:hover {
+        background: rgba(0, 0, 0, 0.1);
+      }
+
+      .refresh-button ha-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
 
       .refresh-button.refreshing {
@@ -1022,6 +1546,221 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         
         .forecast-days {
           grid-template-columns: repeat(3, 1fr);
+        }
+      }
+
+      /* Bedsheet Tracker Styles */
+      .bedsheet-tracker {
+        margin: 16px 0;
+        padding: 16px;
+        background: rgba(0,0,0,0.02);
+        border-radius: 8px;
+        border-left: 4px solid var(--bedsheet-color, var(--primary-color));
+      }
+
+      .bedsheet-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .bedsheet-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+      }
+
+      .bedsheet-info ha-icon {
+        color: var(--bedsheet-color, var(--primary-color));
+        --mdc-icon-size: 24px;
+      }
+
+      .bedsheet-info span {
+        font-weight: 500;
+        color: var(--primary-color);
+      }
+
+      .bedsheet-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      .bedsheet-button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        border: none;
+        border-radius: 6px;
+        background: var(--bedsheet-color, var(--primary-color));
+        color: white;
+        font-size: 0.85rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .bedsheet-button:hover {
+        opacity: 0.8;
+        transform: translateY(-1px);
+      }
+
+      .bedsheet-button.set-button {
+        background: var(--warning-color);
+      }
+
+      .bedsheet-button ha-icon {
+        --mdc-icon-size: 18px;
+      }
+
+      .bedsheet-next {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding: 8px 12px;
+        background: rgba(0,0,0,0.03);
+        border-radius: 6px;
+        font-size: 0.9rem;
+        color: var(--secondary-color);
+      }
+
+      .bedsheet-next ha-icon {
+        color: var(--bedsheet-color, var(--primary-color));
+        --mdc-icon-size: 18px;
+      }
+
+      .bedsheet-progress {
+        margin-top: 12px;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 8px;
+        background: rgba(0,0,0,0.1);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 8px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: var(--bedsheet-color, var(--primary-color));
+        border-radius: 4px;
+        transition: width 0.3s ease;
+      }
+
+      .progress-text {
+        text-align: center;
+        font-size: 0.85rem;
+        color: var(--secondary-color);
+        font-weight: 500;
+      }
+
+      .bedsheet-options {
+        margin-top: 12px;
+        padding: 12px;
+        background: rgba(0,0,0,0.03);
+        border-radius: 6px;
+      }
+
+      .option-buttons {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+
+      .option-buttons button {
+        padding: 8px 12px;
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 4px;
+        background: white;
+        color: var(--primary-color);
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .option-buttons button:hover {
+        background: rgba(0,0,0,0.05);
+        border-color: var(--bedsheet-color, var(--primary-color));
+      }
+
+      .calendar-container {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .calendar-container label {
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: var(--primary-color);
+        margin-bottom: 4px;
+      }
+
+      .bedsheet-calendar {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 4px;
+        background: white;
+        color: var(--primary-color);
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .bedsheet-calendar:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(var(--primary-color-rgb, 0,0,0), 0.2);
+      }
+
+      .calendar-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .calendar-buttons button {
+        padding: 8px 12px;
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 4px;
+        background: white;
+        color: black;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .calendar-buttons button:hover {
+        background: var(--primary-color);
+        color: white;
+      }
+
+      @media (max-width: 500px) {
+        .bedsheet-header {
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 12px;
+        }
+
+        .bedsheet-buttons {
+          width: 100%;
+          justify-content: stretch;
+        }
+
+        .bedsheet-button {
+          flex: 1;
+          justify-content: center;
+        }
+
+        .option-buttons {
+          grid-template-columns: 1fr;
         }
       }
     `;

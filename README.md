@@ -27,6 +27,19 @@ If its about to rain, notify us to take the washing off the line!
 3. Resource Type: `Module`
 4. Save, then shift + refresh your browser. (clears cache)
 
+
+### Setup bedsheet tracking
+
+For the first time implementing this, we need to store the bedsheet date in HA's configuration.yaml file.
+
+```yaml
+input_datetime:
+  bedsheet_last_changed:
+    name: Last Bedsheet Change
+    has_date: true
+    has_time: false
+```
+
 ### Use the card
 
 - Add a new card to a dashboard with type `custom:washing-weather-card` and configure the entity, for example:
