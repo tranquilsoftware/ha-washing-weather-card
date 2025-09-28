@@ -28,16 +28,49 @@ If its about to rain, notify us to take the washing off the line!
 4. Save, then shift + refresh your browser. (clears cache)
 
 
-### Setup bedsheet tracking
+### Setup bedsheet tracking & notifications
 
-For the first time implementing this, we need to store the bedsheet date in HA's configuration.yaml file.
+For the first time implementing this, we need to store the bedsheet date in Home Assistant's configuration.yaml file.
 
 ```yaml
+# Bedsheet tracking
 input_datetime:
   bedsheet_last_changed:
     name: Last Bedsheet Change
     has_date: true
-    has_time: false
+
+# Discord webhook functionality
+input_boolean:
+  rain_alert_sent:
+    name: "Rain Alert Sent This Hour"
+    initial: false
+
+automation:
+  - alias: "Reset Rain Alert Hourly"
+    trigger:
+      - platform: time_pattern
+        minutes: 0  # Every hour at :00
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.rain_alert_sent
+
+shell_command:
+  discord_rain_alert: 'curl -X POST -H "Content-Type: application/json" -d "{\"content\":\"🌧️ **RAIN ALERT** - Take the washing inside! Rain expected in the next hour.\"}" !secret discord_webhook'
+```
+
+
+
+### Setup Discord webhook
+
+If you would like to receive notifications that the giant rain cloud is about to ruin days of drying clothes, you can set up a Discord webhook.
+
+Emplace the following in your existing secrets.yaml file for storing the webhook in a private area.
+
+The file is typically found at `<config>~/secrets.yaml`
+
+```yaml
+DISCORD_WEBHOOK_URL: https://discord.com/api/webhooks/your_webhook_url_here
 ```
 
 ### Use the card

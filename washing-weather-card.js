@@ -1,7 +1,7 @@
 customElements.define('washing-weather-card', class extends HTMLElement {
 
-  DRY_TEMPERATURE_THRESHOLD = 15; // C
-  DRY_HUMIDITY_THRESHOLD = 70; // %
+  DRY_TEMPERATURE_THRESHOLD = 10; // C
+  DRY_HUMIDITY_THRESHOLD = 90; // %
   DRY_LOW_WIND_SPEED_THRESHOLD = 0; // km/h
   DRY_HIGH_WIND_SPEED_THRESHOLD = 40; //km/h
 
@@ -40,7 +40,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
               id="refresh-btn"
               label="Refresh"
             >
-              <ha-icon icon="mdi:refresh"></ha-icon>
+              <ha-icon icon="${this.getUtilityIcon('refresh')}"></ha-icon>
             </ha-icon-button>
           </div>
           <div class="card-content">
@@ -66,13 +66,9 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     const contentDiv = this.querySelector('#weather-info');
     const lastUpdatedDiv = this.querySelector('#last-updated');
     
-    // Try different common weather entity names
+    // weather entity is weather.forecast_home (native)
     let weatherEntity = this._hass.states['weather.forecast_home'];
-
-    // Log which weather entity is being used
-    if (weatherEntity) {
-      console.log('Using weather entity:', weatherEntity.entity_id || 'Unknown entity ID');
-    }
+    let sunEntity = this._hass.states['sun.sun']; // for sunset/sunrise
     
     // Log all weather entities for debugging
     // console.log('Available weather entities:', 
@@ -83,6 +79,13 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       console.log('Weather entity weather.forecast_home not found');
       return;
     }
+
+    if (!sunEntity) {
+      if (contentDiv) contentDiv.innerHTML = this.renderError('Sun entity not found');
+      console.log('Sun entity sun.sun not found');
+      return;
+    }
+    console.log('Sun entity sun.sun:', sunEntity);
     
     // Update last updated time
     if (lastUpdatedDiv && weatherEntity.last_updated) {
@@ -261,7 +264,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         status: 'unknown',
         daysSince: 0,
         interval: data.interval,
-        icon: 'mdi:bed-outline',
+        icon: this.getBedsheetIcon('unknown'),
         text: 'Set when you last changed bedsheets',
         color: '#FFC107',
         showSetButton: true
@@ -276,17 +279,17 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (daysSince >= data.interval) {
       status = 'overdue';
-      icon = 'mdi:bed-empty';
+      icon = this.getBedsheetIcon('overdue');
       text = `Bedsheets overdue! ${daysSince}/${data.interval} days`;
       color = '#F44336';
     } else if (daysSince >= data.interval * 0.8) {
       status = 'due_soon';
-      icon = 'mdi:bed';
+      icon = this.getBedsheetIcon('due_soon');
       text = `Change bedsheets soon (${daysSince}/${data.interval} days)`;
       color = '#FFC107';
     } else {
       status = 'clean';
-      icon = 'mdi:bed-outline';
+      icon = this.getBedsheetIcon('clean');
       text = `Bedsheets clean (${daysSince}/${data.interval} days)`;
       color = '#4CAF50';
     }
@@ -493,7 +496,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     const refreshBtn = this.querySelector('#refresh-btn');
     if (refreshBtn) {
       refreshBtn.classList.add('refreshing');
-      // Remove refreshing class after animation
+      // Remove refreshing styling after animation
       setTimeout(() => {
         refreshBtn.classList.remove('refreshing');
       }, 2000);
@@ -515,6 +518,36 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     }
   }
 
+  getSunsetHour() {
+    const sunEntity = this._hass.states['sun.sun'];
+  
+    if (!sunEntity || !sunEntity.attributes.next_setting) {
+      console.warn('Sun entity not available, falling back to 7 PM');
+      return 19; // Default to 7 PM
+    }
+    
+    const sunsetTime = new Date(sunEntity.attributes.next_setting);
+    const sunsetHour = sunsetTime.getHours();
+    
+    console.log('Sunset time:', sunsetTime, 'Hour:', sunsetHour);
+    return sunsetHour;
+  }
+
+  getSunriseHour() {
+    const sunEntity = this._hass.states['sun.sun'];
+  
+    if (!sunEntity || !sunEntity.attributes.next_rising) {
+      console.warn('Sun entity not available, falling back to 7 AM');
+      return 7; // Default to 7 AM
+    }
+    
+    const sunriseTime = new Date(sunEntity.attributes.next_rising);
+    const sunriseHour = sunriseTime.getHours();
+    
+    console.log('Sunrise time:', sunriseTime, 'Hour:', sunriseHour);
+    return sunriseHour;
+  }
+
   calculateRainWindows(weatherData) {
     console.log('=== CALCULATING DRYING WINDOWS ===');
    
@@ -531,11 +564,11 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     // get current time so we can only return future hours
     const now = new Date();
     
-    // Filter for future daytime hours only (7am - 7pm)
+    // Filter for future daytime hours only (between sunrise and sunset)
     const futureDaytimeHours = hourlyData.filter(hour => {
       const date = new Date(hour.datetime);
       const hour24 = date.getHours();
-      const isDaytime = hour24 >= 7 && hour24 < 19;
+      const isDaytime = hour24 >= this.getSunriseHour() && hour24 < this.getSunsetHour();
       const isFuture = date > now;
       return isDaytime && isFuture;
     });
@@ -576,7 +609,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     console.log(`Future daytime analysis: ${totalFutureHours} total hours, ${rainyHoursCount} rainy, ${dryHoursCount} dry`);
    
-    // Generate human-friendly messages for future hours only
+    // Generate human-readable messages for future hours only
     const dryWindows = [];
     const rainWindows = [];
    
@@ -588,7 +621,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         const firstHour = futureDaytimeHours[0];
         const lastHour = futureDaytimeHours[futureDaytimeHours.length - 1];
         const startTime = new Date(firstHour.datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
-        const endTime = new Date(lastHour.datetime).getHours() === 18 ? "7:00 PM" : 
+        const endTime = new Date(lastHour.datetime).getHours() === this.getSunsetHour() ? "7:00 PM" :  // TODO HARDCODED
           new Date(new Date(lastHour.datetime).getTime() + 60*60*1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
         dryWindows.push(`${startTime} - ${endTime}`);
       }
@@ -661,10 +694,41 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         }
       });
     }
-   
+
+    // debug logs
     console.log('Future drying windows:', dryWindows);
     console.log('Future rain periods to avoid:', rainWindows);
    
+    // START CHECK TO SEE IF ITLL RAIN IN NEXT HOUR 
+    // DISCORD WEBHOOK FUNCTIONALITY.
+    const nextHour = new Date();
+    nextHour.setHours(nextHour.getHours() + 1);
+
+    const willRainInNextHour = futureDaytimeHours.some(hour => {
+        const hourTime = new Date(hour.datetime);
+        const isNextHour = hourTime >= now && hourTime <= nextHour;
+        const isRainy = hour.precipitation_probability > 30 || hour.precipitation > 0;
+        return isNextHour && isRainy;
+    });
+        
+    // Only send once per hour to avoid spam
+    if (willRainInNextHour) {
+      const alertEntity = this._hass.states['input_boolean.rain_alert_sent'];
+      console.log('Rain coming in next hour!');
+
+      if (!alertEntity || alertEntity.state === 'off') {
+          // Send alert
+          this._hass.callService('shell_command', 'discord_rain_alert');
+          
+          // Mark as sent (throttle so we dont get spammed messages)
+          this._hass.callService('input_boolean', 'turn_on', {
+              entity_id: 'input_boolean.rain_alert_sent'
+          });
+        console.log('Rain alert sent!');
+      }
+    }
+    /// END DISCORD WEBHOOK FUNCTIONALITY
+
     return {
       dryWindows,
       rainWindows,
@@ -692,7 +756,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (dryDay) {
       return {
-        icon: 'mdi:tshirt-crew-outline',
+        icon: this.getWashingIcon('tshirt-crew-outline'),
         text: 'Great day for drying outside!',
         color: '#4CAF50'
       };
@@ -702,7 +766,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (condition.includes('rain') || condition.includes('snow') || condition.includes('storm')) {
       return {
-        icon: 'mdi:weather-rainy',
+        icon: this.getWeatherIcon('rain'),
         text: 'Rainy day! Use dryer today.',
         color: '#F44336',
       };
@@ -710,7 +774,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (humidity >= this.DRY_HUMIDITY_THRESHOLD) {
       return {
-        icon: 'mdi:water-percent',
+        icon: this.getWashingIcon('water-percent'),
         text: 'High humidity - drying will be slow. Use dryer today.',
         color: '#FFC107',
       };
@@ -718,7 +782,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (windSpeed < this.DRY_LOW_WIND_SPEED_THRESHOLD) {
       return {
-        icon: 'mdi:weather-windy',
+        icon: this.getWeatherIcon('windy'),
         text: 'Not enough wind for good drying. Use dryer today.',
         color: '#FFC107',
       };
@@ -726,7 +790,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     
     if (windSpeed > this.DRY_HIGH_WIND_SPEED_THRESHOLD) {
       return {
-        icon: 'mdi:weather-windy',
+        icon: this.getWeatherIcon('windy'),
         text: 'Very windy, clothes may fly away! Make sure iron horse is secure.',
         color: '#F44336',
       };
@@ -735,7 +799,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
 
     // else:
     return {
-      icon: 'mdi:washing-machine',
+      icon: this.getWashingIcon('washing-machine'),
       text: 'Consider using the dryer.',
       color: '#FFC107',
     };
@@ -756,6 +820,39 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     return 'mdi:weather-sunny';
   }
 
+  getUtilityIcon(type) {
+    const icons = {
+      refresh: 'mdi:refresh',
+      information: 'mdi:information',
+      alert: 'mdi:alert-circle',
+      check: 'mdi:check',
+      calendar: 'mdi:calendar',
+      'calendar-plus': 'mdi:calendar-plus'
+    };
+    return icons[type] || 'mdi:information';
+  }
+
+  getBedsheetIcon(status) {
+    const icons = {
+      unknown: 'mdi:bed-outline',
+      clean: 'mdi:bed-outline',
+      due_soon: 'mdi:bed',
+      overdue: 'mdi:bed-empty'
+    };
+    return icons[status] || 'mdi:bed-outline';
+  }
+
+  getWashingIcon(type) {
+    const icons = {
+      'tshirt-crew-outline': 'mdi:tshirt-crew-outline',
+      'tshirt-crew': 'mdi:tshirt-crew',
+      'tshirt-crew-off': 'mdi:tshirt-crew-off',
+      'washing-machine': 'mdi:washing-machine',
+      'water-percent': 'mdi:water-percent'
+    };
+    return icons[type] || 'mdi:washing-machine';
+  }
+
   renderWeatherContent(weatherData, washingAdvice, rainWindows, bedsheetStatus) {
     const temp = Math.round(weatherData.temperature || 0);
     const condition = weatherData.condition || 'N/A';
@@ -772,7 +869,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
           <div class="detail">
             <div class="detail-label">Humidity</div>
             <div class="detail-content">
-              <ha-icon icon="mdi:water-percent"></ha-icon>
+              <ha-icon icon="${this.getWashingIcon('water-percent')}"></ha-icon>
               <span>${weatherData.humidity || 0}%</span>
             </div>
           </div>
@@ -801,7 +898,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
             <div class="detail">
               <div class="detail-label">Rain</div>
               <div class="detail-content">
-                <ha-icon icon="mdi:weather-rainy"></ha-icon>
+                <ha-icon icon="${this.getWeatherIcon('rain')}"></ha-icon>
                 <span>${weatherData.precipitation} mm</span>
               </div>
             </div>
@@ -835,7 +932,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         <div class="rain-forecast">
           <div class="forecast-header">Today's Drying Windows</div>
           <div class="no-rain">
-            <ha-icon icon="mdi:information"></ha-icon>
+            <ha-icon icon="${this.getUtilityIcon('information')}"></ha-icon>
             <span>${rainWindows?.message || 'Hourly forecast not available'}</span>
           </div>
         </div>
@@ -906,7 +1003,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         <div class="rain-forecast">
           <div class="forecast-header">Today's Drying Windows</div>
           <div class="no-rain">
-            <ha-icon icon="mdi:weather-sunny"></ha-icon>
+            <ha-icon icon="${this.getWeatherIcon('sunny')}"></ha-icon>
             <span>No more drying opportunities today</span>
           </div>
         </div>
@@ -921,7 +1018,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       futureDryWindows.forEach(window => {
         content += `
           <div class="dry-window">
-            <ha-icon icon="mdi:tshirt-crew"></ha-icon>
+            <ha-icon icon="${this.getWashingIcon('tshirt-crew')}"></ha-icon>
             <span><strong>Good for drying:</strong> ${window}</span>
           </div>
         `;
@@ -941,7 +1038,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         specificRainWindows.forEach(window => {
           content += `
             <div class="rain-window">
-              <ha-icon icon="mdi:weather-rainy"></ha-icon>
+              <ha-icon icon="${this.getWeatherIcon('rain')}"></ha-icon>
               <span><strong>Avoid drying:</strong> ${window}</span>
             </div>
           `;
@@ -959,28 +1056,28 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     if (allDayDrying) {
       content += `
         <div class="window-summary excellent">
-          <ha-icon icon="mdi:weather-sunny"></ha-icon>
+          <ha-icon icon="${this.getWeatherIcon('sunny')}"></ha-icon>
           <span>Perfect day for outdoor drying!</span>
         </div>
       `;
     } else if (mostlyDry || briefShower) {
       content += `
         <div class="window-summary good">
-          <ha-icon icon="mdi:weather-partly-cloudy"></ha-icon>
+          <ha-icon icon="${this.getWeatherIcon('cloudy')}"></ha-icon>
           <span>Great day for outdoor drying!</span>
         </div>
       `;
     } else if (mostlyRainy) {
       content += `
         <div class="window-summary poor">
-          <ha-icon icon="mdi:weather-rainy"></ha-icon>
+          <ha-icon icon="${this.getWeatherIcon('rain')}"></ha-icon>
           <span>Consider indoor drying today</span>
         </div>
       `;
     } else if (hasDryWindows || hasRainWindows) {
       content += `
         <div class="window-summary mixed">
-          <ha-icon icon="mdi:weather-partly-rainy"></ha-icon>
+          <ha-icon icon="${this.getWeatherIcon('rain')}"></ha-icon>
           <span>Mixed conditions - time your drying</span>
         </div>
       `;
@@ -1003,12 +1100,12 @@ customElements.define('washing-weather-card', class extends HTMLElement {
           </div>
           <div class="bedsheet-buttons">
             <button class="bedsheet-button set-button">
-              <ha-icon icon="mdi:calendar-plus"></ha-icon>
+              <ha-icon icon="${this.getUtilityIcon('calendar-plus')}"></ha-icon>
               Set Date
             </button>
             ${!bedsheetStatus.showSetButton ? `
               <button class="bedsheet-button">
-                <ha-icon icon="mdi:check"></ha-icon>
+                <ha-icon icon="${this.getUtilityIcon('check')}"></ha-icon>
                 Changed
               </button>
             ` : ''}
@@ -1017,7 +1114,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         
         ${!bedsheetStatus.showSetButton && bedsheetStatus.nextChange ? `
           <div class="bedsheet-next">
-            <ha-icon icon="mdi:calendar"></ha-icon>
+            <ha-icon icon="${this.getUtilityIcon('calendar')}"></ha-icon>
             <span>Next change due: ${bedsheetStatus.nextChange}</span>
           </div>
         ` : ''}
@@ -1073,7 +1170,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
           <ha-icon icon="${this.getWeatherIcon(condition)}"></ha-icon>
           <div class="forecast-temp">${temp}°</div>
           <div class="drying-advice">
-            <ha-icon icon="${isGood ? 'mdi:tshirt-crew' : 'mdi:tshirt-crew-off'}"></ha-icon>
+            <ha-icon icon="${isGood ? this.getWashingIcon('tshirt-crew') : this.getWashingIcon('tshirt-crew-off')}"></ha-icon>
           </div>
         </div>
       `;
@@ -1109,7 +1206,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
   renderError(message) {
     return `
       <div class="error">
-        <ha-icon icon="mdi:alert-circle"></ha-icon>
+        <ha-icon icon="${this.getUtilityIcon('alert')}"></ha-icon>
         <span>${message}</span>
       </div>
     `;
