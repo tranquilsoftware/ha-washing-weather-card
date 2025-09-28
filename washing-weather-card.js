@@ -5,6 +5,9 @@ customElements.define('washing-weather-card', class extends HTMLElement {
   DRY_LOW_WIND_SPEED_THRESHOLD = 0; // km/h
   DRY_HIGH_WIND_SPEED_THRESHOLD = 40; //km/h
 
+  WET_PRECIPITATION_PROBABILITY_THRESHOLD = 30; // %
+  WET_PRECIPITATION_THRESHOLD = 0; // mm
+
   // Bedsheet configuration
   BEDSHEET_CHANGE_INTERVAL = 14; // days
 
@@ -592,8 +595,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       const precipitation = hour.precipitation || 0;
       const condition = (hour.condition || '').toLowerCase();
      
-      const isRainy = precipProbability > 30 || precipitation > 0 ||
-                     condition.includes('rain') || condition.includes('storm') || condition.includes('drizzle');
+      const isRainy = this.isRainyCondition(precipProbability, precipitation, condition);
      
       if (isRainy) {
         rainyHours.push({ time, hour, precipitation, precipProbability });
@@ -655,8 +657,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
         const precipitation = hour.precipitation || 0;
         const condition = (hour.condition || '').toLowerCase();
        
-        const isRainy = precipProbability > 30 || precipitation > 0 ||
-                       condition.includes('rain') || condition.includes('storm') || condition.includes('drizzle');
+        const isRainy = this.isRainyCondition(precipProbability, precipitation, condition);
        
         if (isRainy) {
           if (currentDryStart !== null) {
@@ -707,7 +708,7 @@ customElements.define('washing-weather-card', class extends HTMLElement {
     const willRainInNextHour = futureDaytimeHours.some(hour => {
         const hourTime = new Date(hour.datetime);
         const isNextHour = hourTime >= now && hourTime <= nextHour;
-        const isRainy = hour.precipitation_probability > 30 || hour.precipitation > 0;
+        const isRainy = this.isRainyCondition(hour.precipitation_probability, hour.precipitation, (hour.condition || '').toLowerCase());
         return isNextHour && isRainy;
     });
         
@@ -851,6 +852,15 @@ customElements.define('washing-weather-card', class extends HTMLElement {
       'water-percent': 'mdi:water-percent'
     };
     return icons[type] || 'mdi:washing-machine';
+  }
+
+  // Helper function to determine if weather conditions indicate rain
+  isRainyCondition(precipProbability, precipitation, condition) {
+    return precipProbability > this.WET_PRECIPITATION_PROBABILITY_THRESHOLD 
+          || precipitation > this.WET_PRECIPITATION_THRESHOLD 
+          || condition.includes('rain')
+          || condition.includes('storm')
+          || condition.includes('drizzle');
   }
 
   renderWeatherContent(weatherData, washingAdvice, rainWindows, bedsheetStatus) {
