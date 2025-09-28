@@ -1,10 +1,8 @@
 # Washing Weather for Home Assistant
 
-A custom Home Assistant integration that provides washing and drying advice based on current and forecasted weather conditions.
+You've got a weather forecast app, but does it tell you if it's good to dry your clothes outside?
 
-Tells us the weekly forecast of where we live.
-
-If its about to rain, notify us to take the washing off the line!
+Weather Washing is a custom Home Assistant card that provides washing and drying advice based on current and forecasted weather conditions. If it's about to rain, notify us to take the washing off the line!
 
 ## Features
 
@@ -15,7 +13,7 @@ If its about to rain, notify us to take the washing off the line!
 
 ## Installation
 
-1. Copy the javascript (.js) file into Home Assistant's `custom_cards` directory:
+Copy the javascript (.js) file into Home Assistant's `custom_cards` directory:
    - Destination: `~<config>~/www/custom_cards/`
    - You may need to make the directory if it is not there.
 
@@ -60,7 +58,6 @@ shell_command:
 ```
 
 
-
 ### Setup Discord webhook
 
 If you would like to receive notifications that the giant rain cloud is about to ruin days of drying clothes, you can set up a Discord webhook.
@@ -73,9 +70,11 @@ The file is typically found at `<config>~/secrets.yaml`
 DISCORD_WEBHOOK_URL: https://discord.com/api/webhooks/your_webhook_url_here
 ```
 
+
 ### Use the card
 
-- Add a new card to a dashboard with type `custom:washing-weather-card` and configure the entity, for example:
-  ```yaml
-  type: custom:washing-weather-card
-  ```
+Add a new card to a dashboard with type `custom:washing-weather-card` and configure the entity, for example:
+
+```yaml
+type: custom:washing-weather-card
+```
